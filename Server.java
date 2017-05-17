@@ -14,18 +14,21 @@ import java.util.Scanner;
 
 public class Server {
 	private static final String NAME  = "SERVER";
-	private static final int PORT = 1069;
-	private boolean shutdown = false;
-	private DatagramSocket receiveSocket;
+	private static final int PORT = 69;
+	private static boolean shutdown = false;
+	private static DatagramSocket receiveSocket;
 	private String path;
-	private int runningThreads = 0;
+	private static int runningThreads = 0;
 	private static Scanner input;
+	private static boolean verbose = true;
 	
 	public Server(String path)
 	{
 		this.path = path;
-		System.out.println("Server's working directory is: " + path);
-		System.out.println(NAME + ": Opening socket");
+		if(verbose){
+			System.out.println("Server's working directory is: " + path);
+			System.out.println(NAME + ": Opening socket");
+		}
 		
 		try {
 			receiveSocket = new DatagramSocket(PORT);
@@ -62,72 +65,76 @@ public class Server {
 		DatagramPacket receivePacket = new DatagramPacket(data, data.length);
 		try {
 			while (true) {
-				System.out.println("---------------------------------");
-				System.out.println("Waiting to Receive from Host");
+				if(verbose){
+					System.out.println("---------------------------------");
+					System.out.println("Waiting to Receive from Host");
+				}
 
 				//Server receives a read or write request
 				receiveSocket.receive(receivePacket);
 				byte[] receivedData = receivePacket.getData();
 				int port = receivePacket.getPort();
 				InetAddress address = receivePacket.getAddress();
-				int length = receivePacket.getLength();
-				int n;
-				for(n = 2; receivedData[n] != 0; n++){}
-				String filename = new String(receivedData, 2, n-2);
-				System.out.println(filename);
-				System.out.println("--------------------------------------------");
-				System.out.println("Packet Opcode: " + receivedData[1]);
-				switch(receivedData[1]) {
-				case (1): System.out.println("Packet Type: RRQ"); break;
-				case (2): System.out.println("Packet Type: WRQ"); break;
-				case (3): System.out.println("Packet Type: DATA"); break;
-				case (4): System.out.println("Packet Type: ACK"); break;
+				if(verbose){
+					System.out.println("");
+					System.out.println(NAME + ": Received packet from:");
 				}
-				
-				System.out.print("Packet Contents: ");
-				for (int i = 0; i < receivedData.length; i++)  {
-					System.out.print(receivedData[i] + " ");
-				}
-				System.out.println();
-				System.out.println("--------------------------------------------");
-				System.out.println("Received a packet.");
-				//processRequest(receivePacket);
-				new Thread(new Runnable() {
-					@Override
-					public void run() {
-						runningThreads++;
-						System.out.println("New thread created.");
-						//runningThreads++;
-						if (receivedData[1] == 1) {
-							System.out.println("Read request received");
-							if(read(filename, receivedData, port, address, length)){
-								System.out.println("A thread has completed execution.");
-							}else{
-								System.out.println("A thread has not completed execution.");
-							}
-						}
-						
-						else if (receivedData[1] == 2) {
-							System.out.println("Write request recieved");
-							if(write(filename, receivedData, port, address, length)){
-								System.out.println("A thread has completed execution.");
-							}else{
-								System.out.println("A thread has not completed execution.");
-							}
-						} 
-						else {
-							System.out.println("ERR");
-						}
-						runningThreads--;
+				printPacket(receivePacket);
+				DataExtract requestInfo = validateAndExtractRequest(receivedData);
+				if(!requestInfo.valid){
+					if(verbose){
+						System.out.println("");
+						System.out.println(NAME + ": Invalid request. Sending error packet and terminating connection with Client");
 					}
-				}).start();
-
+					sendErrorPacket((byte)4, "Illegal TFTP Operation: Illegal Request", address, port, new DatagramSocket());
+				}
+				else{
+					String filename = requestInfo.fileName;
+					new Thread(new Runnable() {
+						@Override
+						public void run() {
+							runningThreads++;
+							if (requestInfo.read) {
+								if(verbose){
+									System.out.println("Read request received");
+								}
+								if(read(filename, receivedData, port, address)){
+									if(verbose){
+										System.out.println("File Read Transfer of " + filename + " Completed");
+									}
+								}else{
+									if(verbose){
+										System.out.println("File Read Transfer of " + filename + " not successful. An error occured");
+									}
+								}
+							}
+							
+							else{
+								if(verbose){
+									System.out.println("Write request recieved");
+								}
+								if(write(filename, receivedData, port, address)){
+									if(verbose){
+										System.out.println("File Read Transfer of " + filename + " Completed");
+									}
+								}else{
+									if(verbose){
+										System.out.println("File Read Transfer of " + filename + " not successful. An error occured");
+									}
+								}
+							}
+							runningThreads--;
+						}
+					}).start();
+	
+				}
 			}
-		} catch (IOException e) {
+		} 
+		catch (IOException e) {
 			e.printStackTrace();
 		}
 	}
-	public boolean read(String filename, byte[] receivedData, int port, InetAddress address, int length){
+	public boolean read(String filename, byte[] receivedData, int port, InetAddress address){
 		DatagramSocket transferSocket = null;
 		try {
 			transferSocket = new DatagramSocket();
@@ -158,7 +165,6 @@ public class Server {
 			while(!transferComplete){
 				bytesRead = fileStream.read(packetData);
 				if(bytesRead != -1){
-					System.out.println("" + bytesRead + " bytes read");
 					//Update Block Number
 					if(Byte.toUnsignedInt(sendPacket.getData()[3]) != 255){
 						packetBytes[2] = 0;
@@ -179,39 +185,75 @@ public class Server {
 						expectedACK[3] = 0;
 					}
 					else{
-						System.out.println("Block Number Error");
-						System.exit(1);
+						if(verbose){
+							System.out.println("Block Number Error");
+						}
+						return false;
 					}
 					System.arraycopy(packetData, 0, packetBytes, 4, packetData.length);
 					
-					System.out.println("" + NAME + ": Sending Data Packet:");
-					System.out.println("Data: ");
-					for (int k=0; k < 4+bytesRead; k++) {
-						 System.out.print(packetBytes[k] + " ");
-					}
-					System.out.println();
-					try{
-						transferSocket.send(new DatagramPacket(packetBytes, bytesRead+4 , address, port));
-					}catch(IOException e){
-						e.printStackTrace();
-						System.exit(1);
-					}
-					try{
-						System.out.println("Waiting for ACK");
-						transferSocket.receive(receivePacket);
-						if(!(verifyData(receivePacket.getData(), expectedACK))){
-							System.out.println("Invalid ACK recieved");
-							System.exit(1);
+					while(true){
+						try{
+							sendPacket = new DatagramPacket(packetBytes, bytesRead+4 , address, port);
+							if(verbose){
+								System.out.println("");
+								System.out.println(NAME + ": Sending Data Packet to:");
+							}
+							printPacket(sendPacket);
+							transferSocket.send(sendPacket);
+						}catch(IOException e){
+							e.printStackTrace();
+							return false;
 						}
-						System.out.println("" + NAME + ": Received ACK Packet:");
-						System.out.println("ACK: ");
-						for (int k=0; k < receivePacket.getData().length; k++) {
-							 System.out.print(receivePacket.getData()[k] + " ");
+						try{
+							if(verbose){
+								System.out.println("Waiting for ACK");
+							}
+							transferSocket.receive(receivePacket);
+						}catch(IOException e){
+							e.printStackTrace();
+							return false;
 						}
-						System.out.println();
-					}catch(IOException e){
-						e.printStackTrace();
-						System.exit(1);
+						if(verbose){
+							System.out.println("");
+							System.out.println(NAME + ": Received Packet from:");
+						}
+						printPacket(receivePacket);
+						
+						if(!validateTID(receivePacket.getAddress(), receivePacket.getPort(), address, port)){
+							System.out.println("");
+							System.out.println(NAME + ": Unknown TID. Sending error packet and resuming connection with Client");
+							sendErrorPacket((byte)5, "Unknown Transfer ID", receivePacket.getAddress(), receivePacket.getPort(), transferSocket);
+						}
+						else{
+							ErrorExtract errorPacket = isErrorPacket(receivePacket);
+							if(errorPacket.isError){
+								System.out.println("");
+								System.out.println("Received Packet is an error packet");
+								System.out.println("Error code: " + errorPacket.errorCode);
+								System.out.println("Error message: " + errorPacket.message);
+								if(errorPacket.terminate){
+									System.out.println("");
+									System.out.println("Terminating the connection");
+									fileStream.close();
+									return false;
+								}
+								else{
+									System.out.println("");
+									System.out.println("Ignoring the error packet and continuing the transfer");
+								}
+							}
+							else if(!(verifyData(new byte[]{receivePacket.getData()[0], receivePacket.getData()[1], receivePacket.getData()[2], receivePacket.getData()[3]}, expectedACK))){
+								System.out.println("");
+								System.out.println(NAME + ": Invalid ACK packet received. Sending error packet and terminating connection with Client");
+								sendErrorPacket((byte)4, "Illegal TFTP Operation: Invalid ACK", receivePacket.getAddress(), receivePacket.getPort(), transferSocket);
+								fileStream.close();
+								return false;
+							}
+							else{
+								break;
+							}
+						}
 					}
 				}
 				else{ 
@@ -221,22 +263,51 @@ public class Server {
 				}
 
 			}
-			return true;
+			return transferComplete;
 		}
 		catch(Exception e)
 		{
 			e.printStackTrace();
+			return false;
 		}
-		return false;
 	}
+	private ErrorExtract isErrorPacket(DatagramPacket packet){
+		byte[] data = packet.getData();
+		if(data[1] != 5){
+			return new ErrorExtract(false, false, (byte)0, null);
+		}
+		else if(data[0] != 0 && data[2] != 0){
+			return new ErrorExtract(false, false, (byte)0, null);
+		}
+		switch (data[3]){
+		case (byte)1:
+			return new ErrorExtract(true, true, (byte)1, new String(data, 4, data.length-4));
+		case (byte)2:
+			return new ErrorExtract(true, true, (byte)2, new String(data, 4, data.length-4));
+		case (byte)3:
+			return new ErrorExtract(true, true, (byte)3, new String(data, 4, data.length-4));
+		case (byte)4:
+			return new ErrorExtract(true, true, (byte)4, new String(data, 4, data.length-4));
+		case (byte)5:
+			return new ErrorExtract(true, true, (byte)5, new String(data, 4, data.length-4));
+		case (byte)6:
+			return new ErrorExtract(true, true, (byte)6, new String(data, 4, data.length-4));
+		default:
+			return new ErrorExtract(false, false, (byte)0, null);
+		}
+	}
+	
+	private Boolean validateTID(InetAddress receivedAddress, int receivedPort, InetAddress expectedAddress, int expectedPort){
+		return (receivedAddress.equals(expectedAddress) && receivedPort == expectedPort);
+		
+	}
+	
 	public Boolean verifyData(byte[] received, byte[] expected){
 		return Arrays.equals(received, expected);
 	}
-	public boolean write(String filename, byte[] receivedData, int port, InetAddress address, int length){
+	public boolean write(String filename, byte[] receivedData, int port, InetAddress address){
 		System.out.println("Write");
-		//InetAddress address = receivePacket.getAddress();
-		System.out.println("ERR");
-		//int port = receivePacket.getPort();
+		
 		DatagramSocket transferSocket = null;
 		try {
 			transferSocket = new DatagramSocket();
@@ -252,27 +323,91 @@ public class Server {
 			e2.printStackTrace();
 		}
 		byte[] ack = {0,4,0,0};
-		byte[] expectedDataTID = {0,3,0,0};
+		byte[] expectedData = {0,3,0,1};
 		byte[] data = new byte[516];
 		boolean finished = false;
-		int len;
 		DatagramPacket receivePacket = new DatagramPacket(data, data.length);
+		DatagramPacket sendPacket = null;
 		while(!finished){
-			try{
-				transferSocket.send(new DatagramPacket(ack, ack.length, address, port)); 
-			}catch(IOException e){
-				e.printStackTrace();
-				System.exit(1);
+			while(true){
+				try{
+					sendPacket = new DatagramPacket(ack, ack.length, address, port);
+					System.out.println("");
+					System.out.println("Server: Sending ACK packet to:");
+					printPacket(sendPacket);
+					transferSocket.send(sendPacket); 
+				}catch(IOException e){
+					e.printStackTrace();
+					System.exit(1);
+				}
+				
+				/*---------------------------------*/
+				
+				/**
+				 * Waiting for Data Packet.
+				 */
+				try{
+					transferSocket.receive(receivePacket);
+				}catch(IOException e){
+					e.printStackTrace();
+					System.exit(1);
+				}
+				
+				System.out.println("");
+				System.out.println(NAME + ": Received Data packet from:");
+				printPacket(receivePacket);
+				
+				if(!validateTID(receivePacket.getAddress(), receivePacket.getPort(), address, port)){
+					System.out.println("");
+					System.out.println(NAME + ": Unknown TID. Sending error packet and resuming connection with Client");
+					sendErrorPacket((byte)5, "Unknown Transfer ID", receivePacket.getAddress(), receivePacket.getPort(), transferSocket);
+				}
+				else{
+					ErrorExtract errorPacket = isErrorPacket(receivePacket);
+					if(errorPacket.isError){
+						System.out.println("");
+						System.out.println("Received Packet is an error packet");
+						System.out.println("Error code: " + errorPacket.errorCode);
+						System.out.println("Error message: " + errorPacket.message);
+						if(errorPacket.terminate){
+							System.out.println("");
+							System.out.println("Terminating the connection");
+							try {
+								fileOutput.close();
+							} catch (IOException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							}
+							return false;
+						}
+						else{
+							System.out.println("");
+							System.out.println("Ignoring the error packet and continuing the transfer");
+						}
+					}
+					else if(!(verifyData(new byte[]{receivePacket.getData()[0], receivePacket.getData()[1], receivePacket.getData()[2], receivePacket.getData()[3]}, expectedData))){
+						System.out.println("");
+						System.out.println(NAME + ": Invalid DATA packet received. Sending error packet and terminating connection with Client");
+						sendErrorPacket((byte)4, "Illegal TFTP Operation: Invalid DATA packet", receivePacket.getAddress(), receivePacket.getPort(), transferSocket);
+						try {
+							fileOutput.close();
+						} catch (IOException e) {
+							// TODO Auto-generated catch block
+							e.printStackTrace();
+						}
+						return false;
+					}
+					else{
+						break;
+					}
+				}
 			}
-			/*---------------------------------*/
-			/*          Printing what we sent  */
-			System.out.println("Server: Sending ACK packet:");
-			System.out.println("To host: " + address);
-			System.out.println("Destination host port: " + port);
-			System.out.println("Length: " + length);
-			System.out.println("Containing: ");
-			for (int j=0;j<ack.length;j++) {
-				 System.out.print(ack[j] + " ");
+			
+			try {
+				fileOutput.write(receivePacket.getData(), 4, receivePacket.getLength()-4);
+			} catch (IOException e1) {
+				// TODO Auto-generated catch block
+				e1.printStackTrace();
 			}
 			
 			//Update ACK Number
@@ -289,54 +424,18 @@ public class Server {
 				System.out.println("Block Number Error");
 				System.exit(1);
 			}
-			if(Byte.toUnsignedInt(expectedDataTID[3]) != 255){
-				expectedDataTID[2] = 0;
-				expectedDataTID[3] = (byte) (Byte.toUnsignedInt(expectedDataTID[3]) + 1);
+			if(Byte.toUnsignedInt(expectedData[3]) != 255){
+				expectedData[2] = 0;
+				expectedData[3] = (byte) (Byte.toUnsignedInt(expectedData[3]) + 1);
 				   
 			}
-			else if(Byte.toUnsignedInt(expectedDataTID[2]) == 0 && Byte.toUnsignedInt(expectedDataTID[3]) == 255){
-				expectedDataTID[2] = (byte) (Byte.toUnsignedInt(expectedDataTID[2]) + 1) ;
-				expectedDataTID[3] = 0;
+			else if(Byte.toUnsignedInt(expectedData[2]) == 0 && Byte.toUnsignedInt(expectedData[3]) == 255){
+				expectedData[2] = (byte) (Byte.toUnsignedInt(expectedData[2]) + 1) ;
+				expectedData[3] = 0;
 			}
 			else{
 				System.out.println("Block Number Error");
 				System.exit(1);
-			}
-			
-			/*---------------------------------*/
-			
-			/**
-			 * Waiting for Data Packet.
-			 */
-			try{
-				transferSocket.receive(receivePacket);
-				if(!(verifyData(new byte[]{receivePacket.getData()[0], receivePacket.getData()[1], receivePacket.getData()[2], receivePacket.getData()[3]}, expectedDataTID))){
-					System.out.println("Invalid ACK recieved");
-					System.exit(1);
-				}
-			}catch(IOException e){
-				e.printStackTrace();
-				System.exit(1);
-			}
-			/*--------------------------------*/
-			/*      Print what we received      */
-			System.out.println("Server: Received Data packet:");
-			System.out.println("To host: " + receivePacket.getAddress());
-			System.out.println("Destination host port: " + receivePacket.getPort());
-			len = receivePacket.getLength();
-			System.out.println("Length: " + len);
-			System.out.println("Containing: ");
-			for (int j=0;j<len;j++) {
-				 System.out.print(receivePacket.getData()[j] + " ");
-			}
-			/*----------------------------------*/
-			// Writing it to file now.
-			
-			try {
-				fileOutput.write(receivePacket.getData(), 4, receivePacket.getLength()-4);
-			} catch (IOException e1) {
-				// TODO Auto-generated catch block
-				e1.printStackTrace();
 			}
 			
 			//-----------------------
@@ -345,29 +444,17 @@ public class Server {
 			 */
 			if(receivePacket.getLength() < 516){
 				finished = true;
-				// and send the LAST ACK of the transfer.----//
 				
 				try{
-					// receivePacket going to send "Ack's"
-					receivePacket.setData(ack);
-					receivePacket.setLength(ack.length);
-					transferSocket.send(receivePacket); 
+					System.out.println("");
+					System.out.println("Server: Sending ACK packet to:");
+					printPacket(sendPacket);
+					transferSocket.send(sendPacket); 
 				}catch(IOException e){
 					e.printStackTrace();
 					System.exit(1);
 				}
-				/*---------------------------------*/
-				/*          Printing what we sent  */
-				System.out.println("Server: Sending ACK packet:");
-				System.out.println("To host: " + receivePacket.getAddress());
-				System.out.println("Destination host port: " + receivePacket.getPort());
-				len = receivePacket.getLength();
-				System.out.println("Length: " + len);
-				System.out.println("Containing: ");
-				for (int j=0;j<len;j++) {
-					 System.out.print(receivePacket.getData()[j] + " ");
-				}
-				//------------Last ACK sent------------------//
+				
 				try {
 					fileOutput.close();
 				} catch (IOException e) {
@@ -381,28 +468,151 @@ public class Server {
 		}
 		return false;
 	}
-	/*public void close()
+	
+	private void printPacket (DatagramPacket packet){
+		System.out.println(NAME + ": packet:");
+		System.out.println("Host: " + packet.getAddress());
+		System.out.println("Port: " + packet.getPort());
+		int len = packet.getLength();
+		System.out.println("Length: " + len);
+		System.out.println("Data: ");
+		for (int j=0;j<len;j++) {
+			 System.out.print(packet.getData()[j] + " ");
+		}
+		System.out.println("");
+	}
+	
+	private DataExtract validateAndExtractRequest(byte[] data){
+		if(data[0] != 0){
+			System.out.println("First data byte is not 0");
+			return new DataExtract(false, null, null);
+		}
+		if(data == null || data.length < 3){
+			System.out.println("Packet data is empty");
+			return new DataExtract(false, null, null);
+		}
+		
+		StringBuilder builder = new StringBuilder();
+		String filename = null;
+		for (int i = 2; i < data.length; i++) {
+			if(data[i] != 0) {
+				builder.append((char) data[i]);
+			} 
+			else {
+				filename = builder.toString();
+				break;
+			}
+		}
+		System.out.println("FileName: " + filename);
+		if(filename == null){
+			System.out.println("Invalid filename");
+			return new DataExtract(false, null, null);
+		}
+		
+		switch(data[1]){
+		case (byte)1:
+			System.out.println("RRQ received");
+			return new DataExtract(true, true, filename);
+		case (byte)2:
+			System.out.println("WRQ received");
+			return new DataExtract(true, false, filename);
+		default:
+			System.out.println("Invalid opcode");
+			return new DataExtract(false, null, null);
+			
+		}
+	}
+	
+	public void sendErrorPacket(byte errorCode, String errorMessage, InetAddress address, int port, DatagramSocket communicationSocket)
 	{
-		socket.close();
-	}*/
+		byte[] dta = new byte[516];
+		dta[0] = 0;
+		dta[1] = 5;
+		dta[2] = 0;
+		dta[3] = errorCode;
+		byte[] msg = errorMessage.getBytes();
+		System.out.println("Message: " + new String(msg));
+		System.arraycopy(msg, 0, dta, 4, msg.length);
+		DatagramPacket errorPacket = new DatagramPacket(dta, 4+msg.length, address, port);
+		System.out.println("");
+		System.out.println(NAME + ": Sending Error Packet to the Client");
+		System.out.println("Errorcode: " + errorCode);
+		printPacket(errorPacket);
+		try {
+			communicationSocket.send(errorPacket);
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+	}
 	
 	public static void main(String args[])
 	{
 		input = new Scanner(System.in);
-		System.out.print("Enter your name: ");
-		 
-		String name = input.nextLine();
+		new Thread(new Runnable() {
+			@Override
+			public void run() {
+				while (true) { // run till shutdown requested
+					if(!shutdown) {
+						System.out.println("Enter q to shutdown the Server");
+						String request = input.nextLine().toLowerCase();
+						if (request.equals("q")) {
+							input.close();
+							shutdown = true;
+						}
 
-		System.out.println("Hello " + name + ". Please enter server path");
+					} 
+					/*Do not exit until all running threads have finished executing*/
+					else if (shutdown && runningThreads == 0) {
+						receiveSocket.close();
+						System.out.println("Server has shut down");
+						System.exit(0);
+					}
+				}
+			}
+		}).start();
 		
+		System.out.println("Hello. Please enter server path");
 		String svPath = input.nextLine();
 		Server server = new Server(svPath);
-		try {
-			server.run();
+		while(true){
+			System.out.println("Would you like verbose mode(y/n)? Press Q to quit");
+			String vrbse = input.nextLine();
+			if(vrbse.equalsIgnoreCase("y")){
+				verbose = true;
+			}
+			else{
+				verbose = false;
+			}
+			try {
+				server.run();
+			}
+			catch (Exception e) {
+				e.printStackTrace();
+				//server.close();
+			}
 		}
-		catch (Exception e) {
-			e.printStackTrace();
-			//server.close();
-		}
+	}
+}
+class DataExtract{
+	protected Boolean valid = false;
+	protected String fileName = null;
+	protected Boolean read = null;
+	public DataExtract(Boolean valid, Boolean read, String fileName){
+		this.valid = valid;
+		this.fileName = fileName;
+		this.read = read;
+	}
+}
+class ErrorExtract{
+	protected Boolean isError = false;
+	protected Boolean terminate = false;
+	protected byte errorCode;
+	protected String message = null;
+	public ErrorExtract(Boolean isError, Boolean terminate, byte errorCode, String message){
+		this.isError = isError;
+		this.terminate = terminate;
+		this.message = message;
+		this.errorCode = errorCode;
 	}
 }
